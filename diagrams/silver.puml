@@ -1,0 +1,65 @@
+@startuml silver
+
+title Silver — données nettoyées, conformes, relationnelles
+
+entity patients {
+  * patient_id
+  --
+  birth_date
+  sex
+  region_code
+}
+
+entity sejours {
+  * stay_id
+  --
+  patient_id
+  service_code
+  admission_ts
+  discharge_ts
+  admission_mode
+  discharge_mode
+}
+
+entity diagnostic {
+  * stay_id
+  * code_cim10
+  --
+  type
+}
+
+entity monitoring {
+  * stay_id
+  * ts
+  --
+  heart_rate
+  spo2
+  temp_c
+}
+
+entity services {
+  * service_code
+  --
+  service_label
+}
+
+entity cim10 {
+  * code_cim10
+  --
+  libelle
+}
+
+' Relations validées (intégrité référentielle vérifiée au chargement)
+patients ||--o{ sejours : patient_id
+services ||--o{ sejours : service_code
+sejours ||--o{ diagnostic : stay_id
+sejours ||--o{ monitoring : stay_id
+cim10 ||--o{ diagnostic : code_cim10
+
+note right of diagnostic
+  Aplati depuis Bronze via ARRAY JOIN :
+  1 ligne Bronze (stay_id + tableau)
+  -> N lignes Silver (stay_id + code_cim10)
+end note
+
+@enduml

@@ -1,0 +1,66 @@
+@startuml bronze
+
+title Bronze — données brutes, telles qu'ingérées
+
+entity patients {
+  * patient_id
+  --
+  birth_date
+  sex
+  region_code
+}
+
+entity sejours {
+  * stay_id
+  --
+  patient_id
+  service_code
+  admission_ts
+  discharge_ts
+  admission_mode
+  discharge_mode
+}
+
+entity diagnostics {
+  * stay_id
+  --
+  diagnostics : Diagnostic[]
+  .. structure de Diagnostic ..
+  code_cim10
+  type
+}
+
+entity monitoring {
+  * stay_id
+  * ts
+  --
+  heart_rate
+  spo2
+  temp_c
+}
+
+entity services {
+  * service_code
+  --
+  service_label
+}
+
+entity cim10 {
+  * code_cim10
+  --
+  libelle
+}
+
+' Relations logiques (non contraintes dans Bronze : source brute non validée)
+sejours ..> patients : patient_id (non FK)
+sejours ..> services : service_code (non FK)
+diagnostics ..> sejours : stay_id (non FK)
+monitoring ..> sejours : stay_id (non FK)
+
+note right of diagnostics
+  Structure imbriquée, fidèle à la
+  source : un tableau de Diagnostic
+  par séjour, pas encore aplati.
+end note
+
+@enduml

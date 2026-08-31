@@ -1,0 +1,89 @@
+@startuml gold
+
+title Gold — modèle en étoile (facts / dimensions)
+
+entity dim_patient {
+  * patient_id
+  --
+  birth_date
+  sex
+  region_code
+  age_group
+}
+
+entity dim_service {
+  * service_code
+  --
+  service_label
+}
+
+entity dim_cim10 {
+  * code_cim10
+  --
+  libelle
+}
+
+entity fact_sejours {
+  * stay_id
+  --
+  patient_id : FK
+  service_code : FK
+  admission_ts
+  discharge_ts
+  duree_sejour_h
+  admission_mode
+  discharge_mode
+  readmission_30j
+}
+
+entity fact_monitoring {
+  * stay_id
+  * ts
+  --
+  patient_id
+  service_code
+  heart_rate
+  spo2
+  temp_c
+  is_alerte_fc
+  is_alerte_spo2
+  is_alerte_temp
+}
+
+entity fact_diagnostics {
+  * stay_id
+  * code_cim10 : FK
+  --
+  patient_id
+  service_code
+  type
+}
+
+dim_patient ||--o{ fact_sejours : patient_id
+dim_service ||--o{ fact_sejours : service_code
+dim_cim10 ||--o{ fact_diagnostics : code_cim10
+
+note "stay_id : dimension dégénérée\npartagée par les 3 facts,\npas de FK d'un fact vers un autre.\nUn incident sur fact_sejours\nn'invalide pas fact_monitoring\nni fact_diagnostics." as N1
+fact_sejours .. N1
+fact_monitoring .. N1
+fact_diagnostics .. N1
+
+note right of fact_sejours
+  Toutes les vues de pilotage (DMS,
+  réadmission, répartition par âge...)
+  sont des requêtes agrégées sur ce
+  fact + ses dimensions, pas des
+  tables physiques séparées.
+end note
+
+note right of fact_monitoring
+  Les 3 facts sont indépendants (pas
+  de FK entre eux). Pour croiser deux
+  facts via stay_id (ex: nb alertes +
+  nb diagnostics par séjour), toujours
+  agréger chacun séparément au grain
+  stay_id AVANT de les joindre entre
+  eux — sinon fan-out (duplication).
+end note
+
+@enduml
