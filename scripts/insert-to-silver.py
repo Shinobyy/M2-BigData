@@ -1,5 +1,19 @@
+"""Bronze -> Silver : construction du modèle en étoile, avec contrôles qualité.
+
+Chaque étape suit le même principe :
+  1. watermark : ne relire de bronze que ce qui n'a jamais été traité
+  2. LIMIT 1 BY <clé> : ne garder qu'une version par clé DANS le lot entrant
+  3. anti-jointure NOT IN : ne pas réécrire une ligne identique à celle déjà
+     présente en silver -- en régime stable, 0 ligne écrite
+Objectif : ne jamais insérer de doublon, plutôt que de le masquer à la lecture.
+
+Les lignes écartées par les contrôles qualité sont tracées dans silver._rejets,
+dans la même fenêtre de watermark que l'insertion.
+"""
+
 import json
 import os
+import sys
 import requests
 from dotenv import load_dotenv
 
@@ -10,22 +24,20 @@ clickhouse_port = os.getenv("CLICKHOUSE_PORT", "8123")
 clickhouse_user = os.getenv("CLICKHOUSE_USER", "default")
 clickhouse_password = os.getenv("CLICKHOUSE_PASSWORD", "")
 
-# Chaque étape suit le même principe :
-#   1. watermark : ne relire de bronze que ce qui n'a jamais été traité
-#   2. LIMIT 1 BY <clé> : ne garder qu'une version par clé DANS le lot entrant
-#   3. anti-jointure NOT IN : ne pas réécrire une ligne identique à celle déjà
-#      présente en silver -- en régime stable, 0 ligne écrite
-# Objectif : ne jamais insérer de doublon, plutôt que de le masquer à la lecture.
-
 SILVER_STEPS = {
-    # patients : doublons (retour quotidien du même patient) -> garde la version la plus récente
-    "patients": {
+    # Contrôles : date de naissance renseignée et non future, sexe normalisable.
+    # Doublons (retour quotidien du même patient) -> version la plus récente.
+    # Aucune colonne d'âge : voir le commentaire de silver.dim_patient dans le
+    # DDL. L'âge est une mesure de l'événement, il est porté par les faits.
+    "dim_patient": {
         "source": "bronze.patients",
         "query": """
-            INSERT INTO silver.patients
+            INSERT INTO silver.dim_patient
             SELECT patient_id, birth_date, sex, region_code, _ingested_at
             FROM (
-                SELECT patient_id, birth_date, upper(sex) AS sex, region_code, _ingested_at
+                SELECT
+                    patient_id, birth_date, upper(sex) AS sex, region_code,
+                    _ingested_at
                 FROM bronze.patients
                 WHERE isNotNull(birth_date) AND birth_date <= today()
                   AND upper(sex) IN ('M', 'F')
@@ -34,7 +46,8 @@ SILVER_STEPS = {
                 LIMIT 1 BY patient_id
             )
             WHERE (patient_id, birth_date, sex, region_code) NOT IN (
-                SELECT patient_id, birth_date, sex, region_code FROM silver.patients FINAL
+                SELECT patient_id, birth_date, sex, region_code
+                FROM silver.dim_patient FINAL
             )
         """,
         "rejects": """
@@ -54,10 +67,10 @@ SILVER_STEPS = {
               AND NOT (isNotNull(birth_date) AND birth_date <= today() AND upper(sex) IN ('M', 'F'))
         """,
     },
-    "services": {
+    "dim_service": {
         "source": "bronze.services",
         "query": """
-            INSERT INTO silver.services
+            INSERT INTO silver.dim_service
             SELECT service_code, service_label, _ingested_at
             FROM (
                 SELECT service_code, service_label, _ingested_at
@@ -68,7 +81,7 @@ SILVER_STEPS = {
                 LIMIT 1 BY service_code
             )
             WHERE (service_code, service_label) NOT IN (
-                SELECT service_code, service_label FROM silver.services FINAL
+                SELECT service_code, service_label FROM silver.dim_service FINAL
             )
         """,
         "rejects": """
@@ -80,10 +93,10 @@ SILVER_STEPS = {
               AND NOT (service_code != '' AND service_label != '')
         """,
     },
-    "cim10": {
+    "dim_cim10": {
         "source": "bronze.cim10",
         "query": """
-            INSERT INTO silver.cim10
+            INSERT INTO silver.dim_cim10
             SELECT code_cim10, libelle, _ingested_at
             FROM (
                 SELECT code_cim10, libelle, _ingested_at
@@ -94,7 +107,7 @@ SILVER_STEPS = {
                 LIMIT 1 BY code_cim10
             )
             WHERE (code_cim10, libelle) NOT IN (
-                SELECT code_cim10, libelle FROM silver.cim10 FINAL
+                SELECT code_cim10, libelle FROM silver.dim_cim10 FINAL
             )
         """,
         "rejects": """
@@ -106,31 +119,64 @@ SILVER_STEPS = {
               AND NOT (code_cim10 != '' AND libelle != '')
         """,
     },
-    # sejours : cohérence temporelle (discharge_ts < admission_ts -> écarté)
-    # séjour en cours : discharge_ts NULL est légitime, pas un rejet
-    "sejours": {
+    # Contrôles : admission renseignée, cohérence temporelle, intégrité
+    # référentielle. Un séjour sans date de sortie est légitime (patient encore
+    # hospitalisé), il est conservé.
+    # readmission_30j a besoin de tout l'historique du patient : on reprend donc
+    # l'intégralité des séjours des patients concernés par une nouveauté.
+    "fact_sejours": {
         "source": "bronze.sejours",
         "query": """
-            INSERT INTO silver.sejours
-            SELECT stay_id, patient_id, service_code, admission_ts,
-                   discharge_ts, admission_mode, discharge_mode, _ingested_at
+            INSERT INTO silver.fact_sejours
+            SELECT
+                stay_id, patient_id, service_code, admission_ts, discharge_ts,
+                if(isNull(discharge_ts), NULL, dateDiff('hour', admission_ts, discharge_ts)) AS duree_sejour_h,
+                admission_mode, discharge_mode,
+                if(
+                    sortie_precedente IS NOT NULL
+                    AND dateDiff('day', sortie_precedente, admission_ts) <= 30,
+                    1, 0
+                ) AS readmission_30j,
+                -- Âge à la date de l'admission, et non à la date du calcul :
+                -- un patient admis à 12 ans puis à 42 ans doit compter dans
+                -- deux tranches différentes, pas deux fois dans la même.
+                toUInt8(age('year', birth_date, admission_ts)) AS age_at_admission,
+                _ingested_at,
+                now() AS _processed_at
             FROM (
-                SELECT stay_id, patient_id, service_code, admission_ts,
-                       discharge_ts, admission_mode, discharge_mode, _ingested_at
-                FROM bronze.sejours
-                WHERE isNotNull(admission_ts)
-                  AND (discharge_ts IS NULL OR discharge_ts >= admission_ts)
-                  AND patient_id IN (SELECT patient_id FROM silver.patients FINAL)
-                  AND service_code IN (SELECT service_code FROM silver.services FINAL)
-                  AND _ingested_at > {watermark}
-                ORDER BY _ingested_at DESC
-                LIMIT 1 BY stay_id
+                SELECT
+                    *,
+                    lagInFrame(discharge_ts) OVER (PARTITION BY patient_id ORDER BY admission_ts) AS sortie_precedente
+                FROM (
+                    SELECT b.stay_id AS stay_id, b.patient_id AS patient_id,
+                           b.service_code AS service_code, b.admission_ts AS admission_ts,
+                           b.discharge_ts AS discharge_ts, b.admission_mode AS admission_mode,
+                           b.discharge_mode AS discharge_mode, b._ingested_at AS _ingested_at,
+                           p.birth_date AS birth_date
+                    -- La jointure sur dim_patient sert à deux choses à la fois :
+                    -- ramener birth_date (pour l'âge à l'admission) et faire
+                    -- office de contrôle d'intégrité référentielle, un séjour
+                    -- dont le patient est inconnu ne trouvant pas de contrepartie.
+                    FROM bronze.sejours AS b
+                    JOIN silver.dim_patient AS p FINAL ON b.patient_id = p.patient_id
+                    WHERE isNotNull(b.admission_ts)
+                      AND (b.discharge_ts IS NULL OR b.discharge_ts >= b.admission_ts)
+                      AND b.service_code IN (SELECT service_code FROM silver.dim_service FINAL)
+                      AND b.patient_id IN (
+                        SELECT DISTINCT patient_id FROM bronze.sejours
+                        WHERE _ingested_at > {watermark}
+                      )
+                    ORDER BY b._ingested_at DESC
+                    LIMIT 1 BY b.stay_id
+                )
             )
             WHERE (stay_id, patient_id, service_code, admission_ts, discharge_ts,
-                   admission_mode, discharge_mode) NOT IN (
+                   duree_sejour_h, admission_mode, discharge_mode, readmission_30j,
+                   age_at_admission) NOT IN (
                 SELECT stay_id, patient_id, service_code, admission_ts, discharge_ts,
-                       admission_mode, discharge_mode
-                FROM silver.sejours FINAL
+                       duree_sejour_h, admission_mode, discharge_mode, readmission_30j,
+                       age_at_admission
+                FROM silver.fact_sejours FINAL
             )
         """,
         "rejects": """
@@ -141,7 +187,7 @@ SILVER_STEPS = {
                     isNull(admission_ts), 'date d''admission manquante',
                     isNotNull(discharge_ts) AND discharge_ts < admission_ts,
                         'incoherence temporelle (sortie avant admission)',
-                    patient_id NOT IN (SELECT patient_id FROM silver.patients FINAL),
+                    patient_id NOT IN (SELECT patient_id FROM silver.dim_patient FINAL),
                         'patient inconnu du referentiel',
                     'service inconnu du referentiel'
                 ),
@@ -155,24 +201,31 @@ SILVER_STEPS = {
               AND NOT (
                 isNotNull(admission_ts)
                 AND (discharge_ts IS NULL OR discharge_ts >= admission_ts)
-                AND patient_id IN (SELECT patient_id FROM silver.patients FINAL)
-                AND service_code IN (SELECT service_code FROM silver.services FINAL)
+                AND patient_id IN (SELECT patient_id FROM silver.dim_patient FINAL)
+                AND service_code IN (SELECT service_code FROM silver.dim_service FINAL)
               )
         """,
     },
-    # monitoring : valeurs hors plage physiologique. Flux volumineux, purement
-    # additif (une clé stay_id+ts n'est jamais redéposée) -> le watermark suffit,
-    # pas besoin d'anti-jointure qui coûterait cher sur ce volume.
-    "monitoring": {
+    # Contrôle : plages physiologiques. Flux volumineux et purement additif ->
+    # watermark seul, pas d'anti-jointure qui coûterait cher sur ce volume.
+    # patient_id/service_code dénormalisés depuis fact_sejours.
+    "fact_monitoring": {
         "source": "bronze.monitoring",
         "query": """
-            INSERT INTO silver.monitoring
-            SELECT stay_id, ts, heart_rate, spo2, temp_c, _ingested_at
-            FROM bronze.monitoring
-            WHERE heart_rate BETWEEN 20 AND 250
-              AND spo2 BETWEEN 50 AND 100
-              AND temp_c BETWEEN 30 AND 45
-              AND _ingested_at > {watermark}
+            INSERT INTO silver.fact_monitoring
+            SELECT
+                m.stay_id, m.ts, s.patient_id, s.service_code,
+                m.heart_rate, m.spo2, m.temp_c,
+                if(m.heart_rate > 120 OR m.heart_rate < 50, 1, 0) AS is_alerte_fc,
+                if(m.spo2 < 90, 1, 0) AS is_alerte_spo2,
+                if(m.temp_c > 38.5 OR m.temp_c < 35, 1, 0) AS is_alerte_temp,
+                m._ingested_at
+            FROM bronze.monitoring m
+            JOIN silver.fact_sejours AS s FINAL ON m.stay_id = s.stay_id
+            WHERE m.heart_rate BETWEEN 20 AND 250
+              AND m.spo2 BETWEEN 50 AND 100
+              AND m.temp_c BETWEEN 30 AND 45
+              AND m._ingested_at > {watermark}
         """,
         "rejects": """
             INSERT INTO silver._rejets (source_table, regle, cle, details, _ingested_at)
@@ -201,22 +254,37 @@ SILVER_STEPS = {
               )
         """,
     },
-    "diagnostic": {
+    # Aplati depuis bronze.diagnostics via ARRAY JOIN (1 ligne bronze -> N lignes
+    # silver). Contrôle : le code CIM-10 doit exister au référentiel.
+    "fact_diagnostics": {
         "source": "bronze.diagnostics",
         "query": """
-            INSERT INTO silver.diagnostic
-            SELECT stay_id, code_cim10, type, _ingested_at
+            INSERT INTO silver.fact_diagnostics
+            SELECT stay_id, code_cim10, patient_id, service_code, type,
+                   age_at_diagnostic, _ingested_at
             FROM (
-                SELECT stay_id, d.code_cim10 AS code_cim10, d.type AS type, _ingested_at
-                FROM bronze.diagnostics
-                ARRAY JOIN diagnostics AS d
-                WHERE d.code_cim10 IN (SELECT code_cim10 FROM silver.cim10 FINAL)
-                  AND _ingested_at > {watermark}
-                ORDER BY _ingested_at DESC
-                LIMIT 1 BY stay_id, code_cim10
+                SELECT
+                    b.stay_id AS stay_id, d.code_cim10 AS code_cim10,
+                    s.patient_id AS patient_id, s.service_code AS service_code,
+                    d.type AS type,
+                    -- Le grain (séjour x code) n'a pas de date propre : la date
+                    -- de référence est l'admission du séjour, déjà ramenée par
+                    -- la jointure qui dénormalise patient_id et service_code.
+                    s.age_at_admission AS age_at_diagnostic,
+                    b._ingested_at AS _ingested_at
+                FROM bronze.diagnostics b
+                ARRAY JOIN b.diagnostics AS d
+                JOIN silver.fact_sejours AS s FINAL ON b.stay_id = s.stay_id
+                WHERE d.code_cim10 IN (SELECT code_cim10 FROM silver.dim_cim10 FINAL)
+                  AND b._ingested_at > {watermark}
+                ORDER BY b._ingested_at DESC
+                LIMIT 1 BY b.stay_id, d.code_cim10
             )
-            WHERE (stay_id, code_cim10, type) NOT IN (
-                SELECT stay_id, code_cim10, type FROM silver.diagnostic FINAL
+            WHERE (stay_id, code_cim10, patient_id, service_code, type,
+                   age_at_diagnostic) NOT IN (
+                SELECT stay_id, code_cim10, patient_id, service_code, type,
+                       age_at_diagnostic
+                FROM silver.fact_diagnostics FINAL
             )
         """,
         "rejects": """
@@ -227,13 +295,16 @@ SILVER_STEPS = {
             FROM bronze.diagnostics
             ARRAY JOIN diagnostics AS d
             WHERE _ingested_at > {watermark}
-              AND d.code_cim10 NOT IN (SELECT code_cim10 FROM silver.cim10 FINAL)
+              AND d.code_cim10 NOT IN (SELECT code_cim10 FROM silver.dim_cim10 FINAL)
         """,
     },
 }
 
-# Ordre important : patients/services/cim10 avant sejours (référencés dans son WHERE)
-TABLE_ORDER = ["patients", "services", "cim10", "sejours", "monitoring", "diagnostic"]
+# Ordre imposé par les dépendances : les dimensions avant les faits (contrôles
+# d'intégrité référentielle), et fact_sejours avant les deux autres faits qui
+# lui empruntent patient_id/service_code.
+TABLE_ORDER = ["dim_patient", "dim_service", "dim_cim10",
+               "fact_sejours", "fact_monitoring", "fact_diagnostics"]
 
 
 def run_query(query):
@@ -259,14 +330,14 @@ def advance_watermark(table_name, source_table):
 
 
 def written_rows(response):
-    summary = response.headers.get("X-ClickHouse-Summary", "")
     try:
-        return int(json.loads(summary).get("written_rows", 0))
+        return int(json.loads(response.headers.get("X-ClickHouse-Summary", "")).get("written_rows", 0))
     except (ValueError, AttributeError):
         return 0
 
 
 def main():
+    failures = 0
     for name in TABLE_ORDER:
         step = SILVER_STEPS[name]
         watermark = read_watermark(name)
@@ -274,6 +345,7 @@ def main():
         response = run_query(step["query"].replace("{watermark}", watermark))
         if response.status_code != 200:
             print(f"Failed on silver.{name}: {response.status_code} {response.text}")
+            failures += 1
             continue
         inserted = written_rows(response)
 
@@ -285,6 +357,7 @@ def main():
             if reject_response.status_code != 200:
                 print(f"Failed on rejets silver.{name}: "
                       f"{reject_response.status_code} {reject_response.text}")
+                failures += 1
             else:
                 rejected = written_rows(reject_response)
 
@@ -296,6 +369,10 @@ def main():
         suffix = f", {rejected} rejetée(s)" if rejected else ""
         print(f"Populated silver.{name}: {inserted} ligne(s) insérée(s){suffix}")
 
+    return failures
+
 
 if __name__ == "__main__":
-    main()
+    # Code de sortie non nul si une étape a échoué : sans ça, main.py
+    # enchaînerait sur Gold avec un Silver incomplet et annoncerait un succès.
+    sys.exit(1 if main() else 0)

@@ -1,143 +1,131 @@
 @startuml gold
 
-title Gold — fact constellation + vues cloisonnées par usage
+title Gold — une table par indicateur, cloisonnée par usage
 
 legend right
-  * = clé de tri (ORDER BY) = clé de déduplication
-  RMT(col) = ReplacingMergeTree versionné sur col
-  stay_id = dimension dégénérée partagée, jamais une FK entre facts
+  * = clé de tri (ORDER BY) = grain de l'indicateur
+  Toutes les tables : ReplacingMergeTree(_processed_at)
+  Un recalcul écrase la ligne, il ne la duplique pas
 end legend
 
-package "Dimensions" {
-  entity dim_patient <<RMT(_ingested_at)>> {
-    * patient_id : String
+package "Pilotage hospitalier\naccès : pilotage_user" #E8F4F8 {
+
+  entity dms_par_service {
+    * service_code : String
+    * mois : Date
     --
-    birth_date : Date32
-    sex : String
-    region_code : String
-    age_group : String
-    .. technique ..
-    _ingested_at : DateTime
+    service_label : String
+    nb_sejours_termines : UInt32
+    nb_sejours_en_cours : UInt32
+    dms_jours : Float64
   }
 
-  entity dim_service <<RMT(_ingested_at)>> {
+  entity urgences_par_jour {
+    * jour : Date
+    --
+    nb_passages : UInt32
+  }
+
+  entity readmission_par_service {
+    * service_code : String
+    * mois : Date
+    --
+    service_label : String
+    nb_sejours : UInt32
+    nb_readmissions : UInt32
+    taux_readmission_pct : Float64
+  }
+
+  entity alertes_par_jour {
+    * jour : Date
     * service_code : String
     --
     service_label : String
-    .. technique ..
-    _ingested_at : DateTime
+    nb_releves : UInt32
+    nb_alertes_fc : UInt32
+    nb_alertes_spo2 : UInt32
+    nb_alertes_temp : UInt32
+    nb_alertes_total : UInt32
+    nb_sejours_concernes : UInt32
   }
 
-  entity dim_cim10 <<RMT(_ingested_at)>> {
-    * code_cim10 : String
+  entity admissions_par_age {
+    * age_group : String  <i>a l'admission</i>
     --
-    libelle : String
-    .. technique ..
-    _ingested_at : DateTime
+    nb_admissions : UInt32
+    nb_patients : UInt32
   }
+
+  note bottom of admissions_par_age
+    Tranche calculee a la date d'admission,
+    pas a la date du calcul : un patient
+    hospitalise a 17 puis 19 ans compte
+    dans deux tranches. La somme des
+    nb_patients peut donc depasser le
+    nombre de patients distincts.
+  end note
 }
 
-package "Facts" {
-  entity fact_sejours <<RMT(_processed_at)>> {
-    * service_code : String
-    * admission_ts : DateTime
-    * stay_id : String
-    --
-    patient_id : String
-    discharge_ts : Nullable(DateTime)
-    duree_sejour_h : Nullable(Float64)
-    admission_mode : String
-    discharge_mode : String
-    readmission_30j : UInt8
-    .. technique ..
-    _ingested_at : DateTime
-    _processed_at : DateTime
-  }
+package "Recherche clinique\naccès : recherche_user" #FFF4E0 {
 
-  entity fact_monitoring <<MergeTree>> {
-    * stay_id : String
-    * ts : DateTime
-    --
-    patient_id : String
-    service_code : String
-    heart_rate : Float32
-    spo2 : Float32
-    temp_c : Float32
-    is_alerte_fc : UInt8
-    is_alerte_spo2 : UInt8
-    is_alerte_temp : UInt8
-    .. technique ..
-    _ingested_at : DateTime
-  }
-
-  entity fact_diagnostics <<RMT(_ingested_at)>> {
-    * stay_id : String
+  entity prevalence_pathologie {
     * code_cim10 : String
     --
-    patient_id : String
-    service_code : String
-    type : String
-    .. technique ..
-    _ingested_at : DateTime
-  }
-}
-
-package "Vues recherche (SQL SECURITY DEFINER)" {
-  entity recherche_prevalence_pathologie <<View>> {
     pathologie : String
     taille_cohorte : UInt64
+    nb_sejours : UInt32
   }
 
-  entity recherche_cohorte_age_sexe <<View>> {
-    age_group : String
-    sex : String
+  entity cohorte_age_sexe {
+    * age_group : String  <i>a l'inclusion</i>
+    * sex : String
+    --
     taille_cohorte : UInt64
   }
+
+  note bottom of cohorte_age_sexe
+    Age A L'INCLUSION = a la premiere
+    admission connue du patient. Convention
+    de la recherche clinique, et seule
+    definition qui ne derive pas avec le
+    temps.
+    ----
+    Perimetre : les patients ayant au moins
+    un sejour (5 358), et non l'ensemble des
+    patients du referentiel (6 000).
+  end note
 }
 
-dim_patient ||--o{ fact_sejours : patient_id
-dim_service ||--o{ fact_sejours : service_code
-dim_patient ||--o{ fact_monitoring : patient_id
-dim_service ||--o{ fact_monitoring : service_code
-dim_patient ||--o{ fact_diagnostics : patient_id
-dim_service ||--o{ fact_diagnostics : service_code
-dim_cim10 ||--o{ fact_diagnostics : code_cim10
-
-fact_diagnostics .[#gray].> recherche_prevalence_pathologie : agrège
-dim_cim10 .[#gray].> recherche_prevalence_pathologie : agrège
-dim_patient .[#gray].> recherche_cohorte_age_sexe : agrège
-
-note as N_degenerate
-  stay_id : dimension dégénérée présente
-  dans les 3 facts, sans FK de fact à fact.
-  Un incident sur un fact n'invalide pas
-  les autres. Pour croiser deux facts,
-  agréger chacun au grain stay_id AVANT
-  de les joindre (sinon fan-out).
-end note
-fact_sejours .. N_degenerate
-fact_monitoring .. N_degenerate
-fact_diagnostics .. N_degenerate
-
-note bottom of fact_sejours
-  Deux colonnes techniques distinctes :
-  _ingested_at  = watermark de lecture
-  _processed_at = version d'écrasement
-  Nécessaire car readmission_30j
-  (lagInFrame sur tout l'historique du
-  patient) impose de recalculer d'anciens
-  séjours quand le patient revient.
+note as N_source
+  <b>Alimentation</b>
+  dms_par_service          <- silver.fact_sejours + dim_service
+  urgences_par_jour        <- silver.fact_sejours
+  readmission_par_service  <- silver.fact_sejours + dim_service
+  alertes_par_jour         <- silver.fact_monitoring + dim_service
+  admissions_par_age       <- silver.fact_sejours (age_at_admission)
+  prevalence_pathologie    <- silver.fact_diagnostics + dim_cim10
+  cohorte_age_sexe         <- silver.fact_sejours (age a la 1re admission)
+                              + dim_patient (sexe)
+  ----
+  Recalcul complet à chaque cycle (un agrégat mensuel
+  change dès qu'un jour du mois arrive), mais seules
+  les lignes dont la valeur a changé sont réécrites.
 end note
 
-note bottom of recherche_cohorte_age_sexe
-  Cloisonnement RGPD :
-  - recherche_user n'a SELECT que sur ces
-    2 vues, jamais sur les facts au grain fin
-  - pilotage_user a SELECT sur les facts et
-    dimensions, jamais sur ces vues
-  - HAVING taille_cohorte >= 5 : règle des
-    petits effectifs, non contournable car
-    la vue s'exécute en SECURITY DEFINER
+note as N_rgpd
+  <b>Cloisonnement RGPD</b>
+  Deux rôles, deux périmètres disjoints.
+  Aucun des deux n'accède à silver : les
+  dashboards ne voient que des agrégats,
+  jamais le grain patient.
+  ----
+  <b>Petits effectifs</b>
+  HAVING taille_cohorte >= 5 appliqué à
+  l'ÉCRITURE : aucune cohorte de moins de
+  5 patients n'est matérialisée. La règle
+  n'est donc pas contournable, même avec
+  un accès direct à la table.
 end note
+N_rgpd .. cohorte_age_sexe
 
 @enduml

@@ -1,115 +1,173 @@
 @startuml silver
 
-title Silver — nettoyé, dédupliqué, intégrité référentielle vérifiée
+title Silver — modèle en étoile au grain fin, nettoyé et contrôlé
 
 legend right
   * = clé de tri (ORDER BY) = clé de déduplication
   RMT(col) = ReplacingMergeTree versionné sur col
-  Alimentation incrémentale : watermark + LIMIT 1 BY + anti-jointure
+  stay_id = dimension dégénérée partagée, jamais une FK entre faits
 end legend
 
-entity patients <<RMT(_ingested_at)>> {
-  * patient_id : String
-  --
-  birth_date : Date32
-  sex : String  <i>normalisé M/F</i>
-  region_code : String
-  .. technique ..
-  _ingested_at : DateTime
+package "Dimensions" {
+  entity dim_patient <<RMT(_ingested_at)>> {
+    * patient_id : String
+    --
+    birth_date : Date32
+    sex : String  <i>normalisé M/F</i>
+    region_code : String
+    .. technique ..
+    _ingested_at : DateTime
+  }
+
+  entity dim_service <<RMT(_ingested_at)>> {
+    * service_code : String
+    --
+    service_label : String
+    .. technique ..
+    _ingested_at : DateTime
+  }
+
+  entity dim_cim10 <<RMT(_ingested_at)>> {
+    * code_cim10 : String
+    --
+    libelle : String
+    .. technique ..
+    _ingested_at : DateTime
+  }
 }
 
-entity sejours <<RMT(_ingested_at)>> {
-  * stay_id : String
-  --
-  patient_id : String
-  service_code : String
-  admission_ts : DateTime
-  discharge_ts : Nullable(DateTime)
-  admission_mode : String
-  discharge_mode : String
-  .. technique ..
-  _ingested_at : DateTime
+package "Faits" {
+  entity fact_sejours <<RMT(_processed_at)>> {
+    * stay_id : String
+    --
+    patient_id : String
+    service_code : String
+    admission_ts : DateTime
+    discharge_ts : Nullable(DateTime)
+    duree_sejour_h : Nullable(Float64)
+    admission_mode : String
+    discharge_mode : String
+    readmission_30j : UInt8
+    <b>age_at_admission</b> : UInt8
+    .. technique ..
+    _ingested_at : DateTime
+    _processed_at : DateTime
+  }
+
+  entity fact_monitoring <<MergeTree>> {
+    * stay_id : String
+    * ts : DateTime
+    --
+    patient_id : String
+    service_code : String
+    heart_rate : Float32
+    spo2 : Float32
+    temp_c : Float32
+    is_alerte_fc : UInt8
+    is_alerte_spo2 : UInt8
+    is_alerte_temp : UInt8
+    .. technique ..
+    _ingested_at : DateTime
+  }
+
+  entity fact_diagnostics <<RMT(_ingested_at)>> {
+    * stay_id : String
+    * code_cim10 : String
+    --
+    patient_id : String
+    service_code : String
+    type : String
+    <b>age_at_diagnostic</b> : UInt8
+    .. technique ..
+    _ingested_at : DateTime
+  }
 }
 
-entity diagnostic <<RMT(_ingested_at)>> {
-  * stay_id : String
-  * code_cim10 : String
-  --
-  type : String
-  .. technique ..
-  _ingested_at : DateTime
-}
-
-entity monitoring <<MergeTree>> {
-  * stay_id : String
-  * ts : DateTime
-  --
-  heart_rate : Float32
-  spo2 : Float32
-  temp_c : Float32
-  .. technique ..
-  _ingested_at : DateTime
-}
-
-entity services <<RMT(_ingested_at)>> {
-  * service_code : String
-  --
-  service_label : String
-  .. technique ..
-  _ingested_at : DateTime
-}
-
-entity cim10 <<RMT(_ingested_at)>> {
-  * code_cim10 : String
-  --
-  libelle : String
-  .. technique ..
-  _ingested_at : DateTime
-}
-
-entity _watermarks <<RMT(updated_at)>> {
-  * table_name : String
-  --
-  last_ingested_at : DateTime
-  updated_at : DateTime
-}
-
-' Intégrité référentielle vérifiée au chargement (lignes orphelines écartées)
-patients ||--o{ sejours : patient_id
-services ||--o{ sejours : service_code
-sejours ||--o{ diagnostic : stay_id
-sejours ||--o{ monitoring : stay_id
-cim10 ||--o{ diagnostic : code_cim10
-
-note right of monitoring
-  Seule table en MergeTree simple :
-  flux purement additif (une clé
-  stay_id+ts n'est jamais redéposée),
-  donc ni déduplication ni
-  anti-jointure nécessaires.
-  C'est aussi le plus gros volume.
+note top of dim_patient
+  <b>Aucune colonne d'âge ici</b>
+  L'âge n'est pas un attribut du patient,
+  c'est une mesure de l'ÉVÉNEMENT. Stocké
+  dans la dimension, il exigerait une date
+  de référence (today()) fausse pour tout
+  fait passé, et jamais rafraîchie puisque
+  le watermark interdit de relire une ligne
+  déjà traitée : l'âge serait figé au jour
+  du premier calcul.
+  ----
+  Il est donc porté par les faits, calculé
+  à la date de l'événement. Le découpage en
+  tranches est laissé à Gold : c'est un choix
+  de présentation, pas une donnée.
 end note
 
-note right of sejours
-  Contrôles qualité appliqués ici :
-  - discharge_ts < admission_ts -> écarté
-  - discharge_ts NULL = séjour en cours,
-    conservé (pas une anomalie)
-  RMT gère le cas d'un séjour redéposé
-  plus tard avec sa date de sortie.
+package "Tables techniques" {
+  entity _watermarks <<RMT(updated_at)>> {
+    * table_name : String
+    --
+    last_ingested_at : DateTime
+    updated_at : DateTime
+  }
+
+  entity _rejets <<MergeTree>> {
+    * source_table : String
+    * detected_at : DateTime
+    --
+    regle : String
+    cle : String
+    details : String
+    _ingested_at : DateTime
+  }
+}
+
+dim_patient ||--o{ fact_sejours : patient_id
+dim_service ||--o{ fact_sejours : service_code
+dim_patient ||--o{ fact_monitoring : patient_id
+dim_service ||--o{ fact_monitoring : service_code
+dim_patient ||--o{ fact_diagnostics : patient_id
+dim_service ||--o{ fact_diagnostics : service_code
+dim_cim10 ||--o{ fact_diagnostics : code_cim10
+
+note as N_controles
+  <b>Contrôles qualité appliqués ici</b>
+  patients : date de naissance valide, sexe en M/F
+  sejours : sortie >= admission, patient et service
+    existants ; sortie NULL = séjour en cours, conservé
+  monitoring : FC 20-250, SpO2 50-100, temp 30-45
+  diagnostics : code CIM-10 présent au référentiel
+  ----
+  Toute ligne écartée est tracée dans _rejets
+  avec la règle et les valeurs en cause.
+end note
+N_controles .. _rejets
+
+note bottom of fact_sejours
+  ORDER BY stay_id seul : la clé de tri servant
+  aussi de clé de déduplication, elle ne doit
+  contenir que des colonnes immuables. Y mettre
+  service_code créerait deux lignes pour un même
+  séjour dont le service serait corrigé.
+  ----
+  _ingested_at  = watermark de lecture
+  _processed_at = version d'écrasement
+  Distinction nécessaire car readmission_30j
+  (lagInFrame sur tout l'historique du patient)
+  impose de recalculer d'anciens séjours quand
+  le patient revient.
 end note
 
-note bottom of diagnostic
-  Aplati depuis bronze.diagnostics
-  via ARRAY JOIN : 1 ligne bronze
-  -> N lignes silver.
+note bottom of fact_monitoring
+  Seul fait en MergeTree simple : flux purement
+  additif (une clé stay_id+ts n'est jamais
+  redéposée), donc aucune déduplication à faire.
+  C'est aussi le plus gros volume : ingestion
+  incrémentale par watermark, sans anti-jointure.
 end note
 
-note bottom of _watermarks
-  "Jusqu'à quel _ingested_at source
-  ai-je lu ?", par table Silver et Gold.
-  Permet de ne jamais relire ni
-  réécrire ce qui est déjà traité.
+note bottom of fact_diagnostics
+  <b>Factless fact table</b> : enregistre la survenue
+  d'un fait (ce séjour porte ce diagnostic) sans
+  grandeur à agréger. Aplatie depuis
+  bronze.diagnostics via ARRAY JOIN.
 end note
 
 @enduml

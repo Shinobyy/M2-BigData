@@ -58,7 +58,7 @@ services:
     volumes:
       - ./drivers:/plugins
 
-    
+
   postgres:
     image: postgres
     environment:
