@@ -11,6 +11,19 @@
 
 CREATE DATABASE IF NOT EXISTS gold;
 
+-- Découpage en tranches d'âge, défini une seule fois et partagé par les deux
+-- KPI qui l'utilisent (admissions_par_age, cohorte_age_sexe) : ils ne peuvent
+-- donc pas diverger. Le bornage vit ici, en Gold, et non en Silver : c'est un
+-- choix de présentation, pas une propriété de la donnée. Silver stocke l'âge
+-- révolu à l'événement, changer les bornes ne demande qu'un recalcul de Gold.
+CREATE FUNCTION IF NOT EXISTS age_group AS (a) -> multiIf(
+    a < 18, '0-17',
+    a <= 35, '18-35',
+    a <= 50, '36-50',
+    a <= 65, '51-65',
+    '66+'
+);
+
 -- ------------------------------------------------- Pilotage hospitalier
 
 -- Durée moyenne de séjour, par service et par mois.

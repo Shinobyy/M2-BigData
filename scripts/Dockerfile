@@ -15,6 +15,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY *.py ./
+# Les transformations Bronze->Silver->Gold sont du SQL, pas du Python : elles
+# vivent dans des fichiers .sql chargés à l'exécution.
+COPY sql ./sql
 
 USER pipeline
 
