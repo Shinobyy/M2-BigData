@@ -1,0 +1,118 @@
+@startuml silver-vs-gold
+
+title Pourquoi Silver ET Gold ?\nMême donnée, deux formes — la source d'un côté, l'usage de l'autre
+
+skinparam packageStyle rectangle
+skinparam linetype ortho
+
+package "SILVER — organisé par SOURCE\n3e forme normale, normalisé" #E8F4F8 {
+
+  entity "patients" as s_pat {
+    patient_id
+    birth_date, sex, region_code
+  }
+  entity "sejours" as s_sej {
+    stay_id
+    patient_id, service_code
+    admission_ts, discharge_ts
+    admission_mode, discharge_mode
+  }
+  entity "diagnostic" as s_diag {
+    stay_id, code_cim10
+    type
+  }
+  entity "monitoring" as s_mon {
+    stay_id, ts
+    heart_rate, spo2, temp_c
+  }
+  entity "services" as s_srv {
+    service_code
+    service_label
+  }
+  entity "cim10" as s_cim {
+    code_cim10
+    libelle
+  }
+
+  s_pat ||--o{ s_sej
+  s_srv ||--o{ s_sej
+  s_sej ||--o{ s_diag
+  s_sej ||--o{ s_mon
+  s_cim ||--o{ s_diag
+}
+
+package "GOLD — organisé par USAGE\nétoile Kimball, dénormalisé" #FFF4E0 {
+
+  entity "dim_patient" as g_dpat {
+    patient_id
+    birth_date, sex, region_code
+    <b>age_group</b>
+  }
+  entity "dim_service" as g_dsrv {
+    service_code
+    service_label
+  }
+  entity "dim_cim10" as g_dcim {
+    code_cim10
+    libelle
+  }
+  entity "fact_sejours" as g_fsej {
+    stay_id
+    patient_id, service_code
+    admission_ts, discharge_ts
+    <b>duree_sejour_h</b>
+    <b>readmission_30j</b>
+  }
+  entity "fact_monitoring" as g_fmon {
+    stay_id, ts
+    <b>patient_id</b>, <b>service_code</b>
+    heart_rate, spo2, temp_c
+    <b>is_alerte_fc / spo2 / temp</b>
+  }
+  entity "fact_diagnostics" as g_fdiag {
+    stay_id, code_cim10
+    <b>patient_id</b>, <b>service_code</b>
+    type
+  }
+
+  g_dpat ||--o{ g_fsej
+  g_dsrv ||--o{ g_fsej
+  g_dpat ||--o{ g_fmon
+  g_dsrv ||--o{ g_fmon
+  g_dpat ||--o{ g_fdiag
+  g_dsrv ||--o{ g_fdiag
+  g_dcim ||--o{ g_fdiag
+}
+
+s_pat -[#green,bold]-> g_dpat : calcul de la\ntranche d'âge
+s_sej -[#green,bold]-> g_fsej : calcul des mesures\n(durée, réadmission)
+s_mon -[#green,bold]-> g_fmon : seuils d'alerte\n+ dénormalisation
+s_diag -[#green,bold]-> g_fdiag : dénormalisation
+s_srv -[#green,dashed]-> g_dsrv
+s_cim -[#green,dashed]-> g_dcim
+
+note as N_silver
+  <b>Rôle : « la donnée, mais juste »</b>
+  Nettoyée, dédupliquée, contrôlée.
+  Agnostique de l'usage : sert de socle
+  réutilisable pour n'importe quel Gold.
+  ----
+  Sujet §6 : « nettoyé, cohérent, enrichi »
+  Databricks : « 3rd-Normal Form like
+  data models », vue d'entreprise
+end note
+N_silver .. s_cim
+
+note as N_gold
+  <b>Rôle : « la donnée, prête à répondre »</b>
+  Mesures calculées (en gras), clés
+  dénormalisées pour éviter les jointures.
+  Jetable : rebâtissable depuis Silver.
+  ----
+  Sujet §6 : « indicateurs par usage »
+  Databricks : « Kimball style star schema
+  ... fit in this Gold Layer »
+end note
+N_gold .. g_dcim
+
+@enduml

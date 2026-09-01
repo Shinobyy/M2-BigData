@@ -25,10 +25,19 @@ def list_files_in_directory(directory):
             files.append(os.path.join(root, filename))
     return files
 
+def log_ingestion(table_name, source_file, status):
+    requests.post(
+        f"http://{clickhouse_host}:{clickhouse_port}/",
+        params={"query": "INSERT INTO bronze._ingestion_log (table_name, source_file, status) FORMAT JSONEachRow"},
+        data=f'{{"table_name": "{table_name}", "source_file": "{source_file}", "status": "{status}"}}',
+        auth=(clickhouse_user, clickhouse_password),
+    )
+
 def insert_file(file_path):
     file_name = os.path.basename(file_path)
     table_name, ext = os.path.splitext(file_name)
     ext = ext.lstrip(".")
+    relative_path = os.path.relpath(file_path, lake_path)
     fmt = {"csv": "CSVWithNames", "parquet": "Parquet", "json": "JSONEachRow"}.get(ext)
     if fmt is None:
         print(f"Unknown format for {file_name}, skipping")
@@ -43,8 +52,10 @@ def insert_file(file_path):
         )
     if response.status_code == 200:
         print(f"Inserted {file_name} into bronze.{table_name}")
+        log_ingestion(table_name, relative_path, "success")
         return True
     print(f"Failed on {file_name}: {response.status_code} {response.text}")
+    log_ingestion(table_name, relative_path, "failed")
     return False
 
 

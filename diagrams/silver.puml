@@ -1,65 +1,115 @@
 @startuml silver
 
-title Silver — données nettoyées, conformes, relationnelles
+title Silver — nettoyé, dédupliqué, intégrité référentielle vérifiée
 
-entity patients {
-  * patient_id
+legend right
+  * = clé de tri (ORDER BY) = clé de déduplication
+  RMT(col) = ReplacingMergeTree versionné sur col
+  Alimentation incrémentale : watermark + LIMIT 1 BY + anti-jointure
+end legend
+
+entity patients <<RMT(_ingested_at)>> {
+  * patient_id : String
   --
-  birth_date
-  sex
-  region_code
+  birth_date : Date32
+  sex : String  <i>normalisé M/F</i>
+  region_code : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
-entity sejours {
-  * stay_id
+entity sejours <<RMT(_ingested_at)>> {
+  * stay_id : String
   --
-  patient_id
-  service_code
-  admission_ts
-  discharge_ts
-  admission_mode
-  discharge_mode
+  patient_id : String
+  service_code : String
+  admission_ts : DateTime
+  discharge_ts : Nullable(DateTime)
+  admission_mode : String
+  discharge_mode : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
-entity diagnostic {
-  * stay_id
-  * code_cim10
+entity diagnostic <<RMT(_ingested_at)>> {
+  * stay_id : String
+  * code_cim10 : String
   --
-  type
+  type : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
-entity monitoring {
-  * stay_id
-  * ts
+entity monitoring <<MergeTree>> {
+  * stay_id : String
+  * ts : DateTime
   --
-  heart_rate
-  spo2
-  temp_c
+  heart_rate : Float32
+  spo2 : Float32
+  temp_c : Float32
+  .. technique ..
+  _ingested_at : DateTime
 }
 
-entity services {
-  * service_code
+entity services <<RMT(_ingested_at)>> {
+  * service_code : String
   --
-  service_label
+  service_label : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
-entity cim10 {
-  * code_cim10
+entity cim10 <<RMT(_ingested_at)>> {
+  * code_cim10 : String
   --
-  libelle
+  libelle : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
-' Relations validées (intégrité référentielle vérifiée au chargement)
+entity _watermarks <<RMT(updated_at)>> {
+  * table_name : String
+  --
+  last_ingested_at : DateTime
+  updated_at : DateTime
+}
+
+' Intégrité référentielle vérifiée au chargement (lignes orphelines écartées)
 patients ||--o{ sejours : patient_id
 services ||--o{ sejours : service_code
 sejours ||--o{ diagnostic : stay_id
 sejours ||--o{ monitoring : stay_id
 cim10 ||--o{ diagnostic : code_cim10
 
-note right of diagnostic
-  Aplati depuis Bronze via ARRAY JOIN :
-  1 ligne Bronze (stay_id + tableau)
-  -> N lignes Silver (stay_id + code_cim10)
+note right of monitoring
+  Seule table en MergeTree simple :
+  flux purement additif (une clé
+  stay_id+ts n'est jamais redéposée),
+  donc ni déduplication ni
+  anti-jointure nécessaires.
+  C'est aussi le plus gros volume.
+end note
+
+note right of sejours
+  Contrôles qualité appliqués ici :
+  - discharge_ts < admission_ts -> écarté
+  - discharge_ts NULL = séjour en cours,
+    conservé (pas une anomalie)
+  RMT gère le cas d'un séjour redéposé
+  plus tard avec sa date de sortie.
+end note
+
+note bottom of diagnostic
+  Aplati depuis bronze.diagnostics
+  via ARRAY JOIN : 1 ligne bronze
+  -> N lignes silver.
+end note
+
+note bottom of _watermarks
+  "Jusqu'à quel _ingested_at source
+  ai-je lu ?", par table Silver et Gold.
+  Permet de ne jamais relire ni
+  réécrire ce qui est déjà traité.
 end note
 
 @enduml

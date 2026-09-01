@@ -21,26 +21,29 @@ CREATE TABLE IF NOT EXISTS bronze.sejours
     admission_ts    DateTime,
     discharge_ts    Nullable(DateTime),
     admission_mode  String,
-    discharge_mode  String
+    discharge_mode  String,
+    _ingested_at    DateTime DEFAULT now()
 )
 ENGINE = MergeTree
 ORDER BY stay_id;
 
 CREATE TABLE IF NOT EXISTS bronze.diagnostics
 (
-    stay_id      String,
-    diagnostics  Array(Tuple(code_cim10 String, type String))
+    stay_id       String,
+    diagnostics   Array(Tuple(code_cim10 String, type String)),
+    _ingested_at  DateTime DEFAULT now()
 )
 ENGINE = MergeTree
 ORDER BY stay_id;
 
 CREATE TABLE IF NOT EXISTS bronze.monitoring
 (
-    stay_id     String,
-    ts          DateTime,
-    heart_rate  Float32,
-    spo2        Float32,
-    temp_c      Float32
+    stay_id       String,
+    ts            DateTime,
+    heart_rate    Float32,
+    spo2          Float32,
+    temp_c        Float32,
+    _ingested_at  DateTime DEFAULT now()
 )
 ENGINE = MergeTree
 ORDER BY (stay_id, ts);
@@ -48,15 +51,28 @@ ORDER BY (stay_id, ts);
 CREATE TABLE IF NOT EXISTS bronze.services
 (
     service_code   String,
-    service_label  String
+    service_label  String,
+    _ingested_at   DateTime DEFAULT now()
 )
 ENGINE = MergeTree
 ORDER BY service_code;
 
 CREATE TABLE IF NOT EXISTS bronze.cim10
 (
-    code_cim10  String,
-    libelle     String
+    code_cim10    String,
+    libelle       String,
+    _ingested_at  DateTime DEFAULT now()
 )
 ENGINE = MergeTree
 ORDER BY code_cim10;
+
+-- Traçabilité au niveau fichier : d'où vient chaque lot de données et quand il a été traité.
+CREATE TABLE IF NOT EXISTS bronze._ingestion_log
+(
+    ingested_at  DateTime DEFAULT now(),
+    table_name   String,
+    source_file  String,
+    status       String
+)
+ENGINE = MergeTree
+ORDER BY ingested_at;

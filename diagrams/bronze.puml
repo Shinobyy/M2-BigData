@@ -1,66 +1,104 @@
 @startuml bronze
 
-title Bronze — données brutes, telles qu'ingérées
+title Bronze — tables typées, peu transformées\n(source : lake/, déjà pseudonymisé)
+
+legend right
+  * = clé de tri (ORDER BY)
+  Toutes les tables : ENGINE = MergeTree (append-only)
+  _ingested_at : DEFAULT now(), horodatage d'ingestion
+end legend
 
 entity patients {
-  * patient_id
+  * patient_id : String
   --
-  birth_date
-  sex
-  region_code
+  birth_date : Date32
+  sex : String
+  region_code : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
 entity sejours {
-  * stay_id
+  * stay_id : String
   --
-  patient_id
-  service_code
-  admission_ts
-  discharge_ts
-  admission_mode
-  discharge_mode
+  patient_id : String
+  service_code : String
+  admission_ts : DateTime
+  discharge_ts : Nullable(DateTime)
+  admission_mode : String
+  discharge_mode : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
 entity diagnostics {
-  * stay_id
+  * stay_id : String
   --
-  diagnostics : Diagnostic[]
-  .. structure de Diagnostic ..
-  code_cim10
-  type
+  diagnostics : Array(Tuple(\n    code_cim10 String,\n    type String))
+  .. technique ..
+  _ingested_at : DateTime
 }
 
 entity monitoring {
-  * stay_id
-  * ts
+  * stay_id : String
+  * ts : DateTime
   --
-  heart_rate
-  spo2
-  temp_c
+  heart_rate : Float32
+  spo2 : Float32
+  temp_c : Float32
+  .. technique ..
+  _ingested_at : DateTime
 }
 
 entity services {
-  * service_code
+  * service_code : String
   --
-  service_label
+  service_label : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
 entity cim10 {
-  * code_cim10
+  * code_cim10 : String
   --
-  libelle
+  libelle : String
+  .. technique ..
+  _ingested_at : DateTime
 }
 
-' Relations logiques (non contraintes dans Bronze : source brute non validée)
+entity _ingestion_log {
+  * ingested_at : DateTime
+  --
+  table_name : String
+  source_file : String
+  status : String
+}
+
+' Relations logiques, non contraintes : Bronze accepte la donnée telle quelle,
+' la validation référentielle n'a lieu qu'en Silver.
 sejours ..> patients : patient_id (non FK)
 sejours ..> services : service_code (non FK)
 diagnostics ..> sejours : stay_id (non FK)
 monitoring ..> sejours : stay_id (non FK)
 
+note right of patients
+  patient_id est déjà un pseudonyme
+  (SHA256 + sel appliqué à la copie
+  vers le lake). nir/nom/prenom
+  n'entrent jamais dans l'entrepôt.
+end note
+
 note right of diagnostics
-  Structure imbriquée, fidèle à la
-  source : un tableau de Diagnostic
-  par séjour, pas encore aplati.
+  Structure imbriquée conservée telle
+  quelle : un tableau de diagnostics
+  par séjour. L'aplatissement est
+  fait en Silver.
+end note
+
+note bottom of _ingestion_log
+  Traçabilité : une ligne par fichier
+  ingéré (quelle table, quel fichier
+  source, quand, succès ou échec).
 end note
 
 @enduml
