@@ -9,8 +9,9 @@
 -- Consequence assumee : la cohorte porte sur les patients ayant au moins un
 -- sejour, et non sur l'ensemble des patients connus du referentiel.
 --
--- RGPD petits effectifs : HAVING applique a l'ecriture (cf.
--- prevalence_pathologie.sql).
+-- RGPD petits effectifs : le HAVING filtre A L'ECRITURE, donc aucune cohorte
+-- de moins de 5 patients n'est materialisee. La regle n'est pas contournable,
+-- meme avec un acces direct a la table.
 
 INSERT INTO gold.cohorte_age_sexe
 SELECT age_group, sex, taille_cohorte, now() AS _processed_at
@@ -28,7 +29,4 @@ FROM (
     JOIN silver.dim_patient AS p FINAL ON i.patient_id = p.patient_id
     GROUP BY age_group, sex
     HAVING taille_cohorte >= 5
-)
-WHERE (age_group, sex, taille_cohorte) NOT IN (
-    SELECT age_group, sex, taille_cohorte FROM gold.cohorte_age_sexe FINAL
 )

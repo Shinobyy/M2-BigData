@@ -9,6 +9,3 @@ FROM (
     WHERE service_code = 'URGENCES'
     GROUP BY jour
 )
-WHERE (jour, nb_passages) NOT IN (
-    SELECT jour, nb_passages FROM gold.urgences_par_jour FINAL
-)

@@ -19,6 +19,3 @@ FROM (
     FROM silver.fact_sejours FINAL
     GROUP BY age_group
 )
-WHERE (age_group, nb_admissions, nb_patients) NOT IN (
-    SELECT age_group, nb_admissions, nb_patients FROM gold.admissions_par_age FINAL
-)

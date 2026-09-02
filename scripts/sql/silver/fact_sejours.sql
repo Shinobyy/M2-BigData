@@ -13,21 +13,22 @@ SELECT
     stay_id, patient_id, service_code, admission_ts, discharge_ts,
     if(isNull(discharge_ts), NULL, dateDiff('hour', admission_ts, discharge_ts)) AS duree_sejour_h,
     admission_mode, discharge_mode,
+
     if(
         sortie_precedente IS NOT NULL
+        -- On ne considère pas les morts dans la KPI
+        AND mode_sortie_precedent != 'deces'
         AND dateDiff('day', sortie_precedente, admission_ts) <= 30,
         1, 0
     ) AS readmission_30j,
-    -- Age a la date de l'admission, et non a la date du calcul : un patient
-    -- admis a 12 ans puis a 42 ans doit compter dans deux tranches
-    -- differentes, pas deux fois dans la meme.
     toUInt8(age('year', birth_date, admission_ts)) AS age_at_admission,
     _ingested_at,
     now() AS _processed_at
 FROM (
     SELECT
         *,
-        lagInFrame(discharge_ts) OVER (PARTITION BY patient_id ORDER BY admission_ts) AS sortie_precedente
+        lagInFrame(discharge_ts) OVER w AS sortie_precedente,
+        lagInFrame(discharge_mode) OVER w AS mode_sortie_precedent
     FROM (
         SELECT b.stay_id AS stay_id, b.patient_id AS patient_id,
                b.service_code AS service_code, b.admission_ts AS admission_ts,
@@ -50,6 +51,11 @@ FROM (
         ORDER BY b._ingested_at DESC
         LIMIT 1 BY b.stay_id
     )
+    -- Cadre explicite sur toute la partition : le cadre par defaut de
+    -- ClickHouse est RANGE ... CURRENT ROW, ou lagInFrame ne se comporte pas
+    -- comme le LAG du SQL standard des qu'il y a des admission_ts ex aequo.
+    WINDOW w AS (PARTITION BY patient_id ORDER BY admission_ts
+                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
 )
 WHERE (stay_id, patient_id, service_code, admission_ts, discharge_ts,
        duree_sejour_h, admission_mode, discharge_mode, readmission_30j,

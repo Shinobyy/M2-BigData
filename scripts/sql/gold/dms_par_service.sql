@@ -19,7 +19,3 @@ FROM (
     JOIN silver.dim_service AS d FINAL ON f.service_code = d.service_code
     GROUP BY service_code, service_label, mois
 )
-WHERE (service_code, mois, nb_sejours_termines, nb_sejours_en_cours, dms_jours) NOT IN (
-    SELECT service_code, mois, nb_sejours_termines, nb_sejours_en_cours, dms_jours
-    FROM gold.dms_par_service FINAL
-)

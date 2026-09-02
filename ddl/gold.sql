@@ -4,10 +4,15 @@
 -- les dashboards lisent, ils n'agrègent pas. Le grain de chaque table est son
 -- axe d'analyse (service x mois, jour, tranche d'age...).
 --
--- Toutes en ReplacingMergeTree(_processed_at) ordonnées sur leur grain : un
--- recalcul réécrit la ligne correspondante au lieu de la dupliquer, et les
--- tables restent consultables en permanence (pas de TRUNCATE, donc pas de
--- fenêtre pendant laquelle un dashboard verrait une table vide).
+-- Toutes en ReplacingMergeTree(_processed_at) ordonnées sur leur grain : le
+-- moteur garantit qu'une clé n'apparaît jamais deux fois, quel que soit le
+-- déroulé de l'écriture.
+--
+-- Le recalcul se fait par TRUNCATE puis réécriture intégrale (cf.
+-- scripts/insert-to-gold.py) : ReplacingMergeTree écrase les lignes de même
+-- clé mais ne supprime pas, une clé disparue de Silver resterait donc affichée
+-- avec ses anciennes valeurs. Le prix est une brève fenêtre, à chaque cycle,
+-- pendant laquelle un dashboard voit la table vide.
 
 CREATE DATABASE IF NOT EXISTS gold;
 
@@ -16,13 +21,26 @@ CREATE DATABASE IF NOT EXISTS gold;
 -- donc pas diverger. Le bornage vit ici, en Gold, et non en Silver : c'est un
 -- choix de présentation, pas une propriété de la donnée. Silver stocke l'âge
 -- révolu à l'événement, changer les bornes ne demande qu'un recalcul de Gold.
-CREATE FUNCTION IF NOT EXISTS age_group AS (a) -> multiIf(
-    a < 18, '0-17',
-    a <= 35, '18-35',
-    a <= 50, '36-50',
-    a <= 65, '51-65',
-    '66+'
+-- OR REPLACE et non IF NOT EXISTS : ClickHouse ne compare pas les corps, il
+-- ne regarde que le nom. Avec IF NOT EXISTS, modifier les bornes ci-dessous ne
+-- se propagerait jamais au serveur -- le fichier et la fonction vivante
+-- divergeraient en silence.
+CREATE OR REPLACE FUNCTION age_group AS (a) -> multiIf(
+    a < 10, '0-9',
+    a <= 19, '10-19',
+    a <= 29, '20-29',
+    a <= 39, '30-39',
+    a <= 49, '40-49',
+    a <= 59, '50-59',
+    a <= 69, '60-69',
+    a <= 79, '70-79',
+    a <= 89, '80-89',
+    a <= 99, '90-99',
+    '100+'
 );
+-- 0-9 / 10- 19 / 20-29 / 30-39 / 40-49 / 50-59 / 60-69 / 70-79 / 80-89 / 90 - 99
+
+
 
 -- ------------------------------------------------- Pilotage hospitalier
 
@@ -52,11 +70,12 @@ CREATE TABLE IF NOT EXISTS gold.urgences_par_jour
 ENGINE = ReplacingMergeTree(_processed_at)
 ORDER BY jour;
 
--- Taux de réadmission à 30 jours, par service et par mois.
-CREATE TABLE IF NOT EXISTS gold.readmission_par_service
+-- Taux de réadmission à 30 jours, par mois, tous services confondus.
+-- Le taux est recalculé au grain mois et non moyenné depuis un grain plus
+-- fin : une moyenne de taux par service donnerait un poids identique à un
+-- service de 20 séjours et à un service de 2 000.
+CREATE TABLE IF NOT EXISTS gold.readmission_par_mois
 (
-    service_code           String,
-    service_label          String,
     mois                   Date,
     nb_sejours             UInt32,
     nb_readmissions        UInt32,
@@ -64,19 +83,17 @@ CREATE TABLE IF NOT EXISTS gold.readmission_par_service
     _processed_at          DateTime
 )
 ENGINE = ReplacingMergeTree(_processed_at)
-ORDER BY (service_code, mois);
+ORDER BY mois;
 
 -- Surveillance des constantes : relevés en alerte par jour, ventilés par type.
 -- Un même relevé peut violer plusieurs bornes : nb_alertes_total compte les
 -- relevés en alerte, pas la somme des trois colonnes.
--- Grain (jour x service) et non (jour) seul : la surveillance ne concerne que
--- certains services, et le pilotage a besoin de savoir lequel décroche. Le
--- total journalier reste une simple somme sur les services.
+-- Grain (jour) seul : tous services confondus. nb_sejours_concernes est donc
+-- recalculé à ce grain et non sommé -- un séjour transféré d'un service à un
+-- autre dans la même journée ne doit compter qu'une fois.
 CREATE TABLE IF NOT EXISTS gold.alertes_par_jour
 (
     jour                  Date,
-    service_code          String,
-    service_label         String,
     nb_releves            UInt32,
     nb_alertes_fc         UInt32,
     nb_alertes_spo2       UInt32,
@@ -86,7 +103,7 @@ CREATE TABLE IF NOT EXISTS gold.alertes_par_jour
     _processed_at         DateTime
 )
 ENGINE = ReplacingMergeTree(_processed_at)
-ORDER BY (jour, service_code);
+ORDER BY jour;
 
 -- Répartition des admissions par tranche d'âge.
 CREATE TABLE IF NOT EXISTS gold.admissions_par_age
@@ -139,7 +156,7 @@ CREATE USER IF NOT EXISTS recherche_user IDENTIFIED WITH plaintext_password BY '
 
 GRANT SELECT ON gold.dms_par_service TO pilotage_user;
 GRANT SELECT ON gold.urgences_par_jour TO pilotage_user;
-GRANT SELECT ON gold.readmission_par_service TO pilotage_user;
+GRANT SELECT ON gold.readmission_par_mois TO pilotage_user;
 GRANT SELECT ON gold.alertes_par_jour TO pilotage_user;
 GRANT SELECT ON gold.admissions_par_age TO pilotage_user;
 

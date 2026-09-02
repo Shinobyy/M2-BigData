@@ -13,11 +13,11 @@ SELECT
     m.stay_id, m.ts, s.patient_id, s.service_code,
     m.heart_rate, m.spo2, m.temp_c,
     if(m.heart_rate > 120 OR m.heart_rate < 50, 1, 0) AS is_alerte_fc,
-    if(m.spo2 < 90, 1, 0) AS is_alerte_spo2,
-    if(m.temp_c > 38.5 OR m.temp_c < 35, 1, 0) AS is_alerte_temp,
+    if(m.spo2 < 92, 1, 0) AS is_alerte_spo2,
+    if(m.temp_c > 38.5, 1, 0) AS is_alerte_temp,
     m._ingested_at
 FROM bronze.monitoring m
-JOIN silver.fact_sejours AS s FINAL ON m.stay_id = s.stay_id
+JOIN bronze.sejours AS s ON m.stay_id = s.stay_id
 WHERE m.heart_rate BETWEEN 20 AND 250
   AND m.spo2 BETWEEN 50 AND 100
   AND m.temp_c BETWEEN 30 AND 45
