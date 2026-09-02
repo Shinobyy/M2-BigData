@@ -5,12 +5,23 @@ de la table qu'il alimente, ce qui rend la correspondance KPI <-> requête
 immédiate pour qui reprend le projet.
 
 Pas de watermark ici, contrairement à Silver : un agrégat sur un mois change
-dès qu'un jour de ce mois arrive, il faut donc le recalculer entièrement. En
-revanche l'anti-jointure reste : seules les lignes dont la valeur a réellement
-changé sont réécrites. En régime stable, 0 ligne écrite.
+dès qu'un jour de ce mois arrive, il faut donc le recalculer entièrement.
 
-Aucun TRUNCATE : les tables restent lisibles pendant tout le cycle, les
-ReplacingMergeTree se chargent d'écraser les versions précédentes.
+Chaque table est vidée puis réécrite intégralement. Le ReplacingMergeTree
+écraserait bien les lignes de même clé, mais il ne SUPPRIME pas : une ligne
+dont la clé disparaît de Silver (un service fermé, un code CIM-10 retiré, un
+mois corrigé) resterait affichée indéfiniment avec ses anciens chiffres. Le
+TRUNCATE est la seule façon simple de garantir que Gold ne contient que ce que
+Silver contient encore.
+
+Contrepartie assumée : entre le TRUNCATE et la fin de l'INSERT, un dashboard
+qui interroge la table la voit vide. La fenêtre est de l'ordre de la seconde
+sur ce volume. Si l'INSERT échoue, la table reste vide jusqu'au cycle suivant
+-- l'échec est signalé en sortie non nulle, pas masqué.
+
+Le TRUNCATE vit ici et non dans les fichiers .sql : l'interface HTTP de
+ClickHouse n'accepte qu'une seule instruction par requête, un fichier
+contenant "TRUNCATE ...; INSERT ..." est rejeté en bloc.
 """
 
 import json
@@ -30,7 +41,7 @@ SQL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sql", "gold"
 
 # Aucune dépendance entre ces tables (chacune lit Silver, jamais une autre table
 # Gold) : l'ordre n'est ici que celui d'affichage dans les journaux.
-TABLE_ORDER = ["dms_par_service", "urgences_par_jour", "readmission_par_service",
+TABLE_ORDER = ["dms_par_service", "urgences_par_jour", "readmission_par_mois",
                "alertes_par_jour", "admissions_par_age",
                "prevalence_pathologie", "cohorte_age_sexe"]
 
@@ -58,12 +69,16 @@ def written_rows(response):
 def main():
     failures = 0
     for name in TABLE_ORDER:
+        truncate = run_query(f"TRUNCATE TABLE gold.{name}")
+        if truncate.status_code != 200:
+            print(f"Failed to clear gold.{name}: {truncate.status_code} {truncate.text}")
+            failures += 1
+            continue
         response = run_query(read_sql(f"{name}.sql"))
         if response.status_code != 200:
             print(f"Failed on gold.{name}: {response.status_code} {response.text}")
             failures += 1
             continue
-        run_query(f"OPTIMIZE TABLE gold.{name} FINAL")
         print(f"Populated gold.{name}: {written_rows(response)} ligne(s) écrite(s)")
     return failures
 
