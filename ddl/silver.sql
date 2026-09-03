@@ -60,10 +60,20 @@ CREATE TABLE IF NOT EXISTS silver.dim_patient
 ENGINE = ReplacingMergeTree(_ingested_at)
 ORDER BY patient_id;
 
+-- service_label / categorie / pole forment une hierarchie a trois niveaux
+-- d'agregation croissants, stockee a plat : l'eclater en dim_categorie /
+-- dim_pole obligerait chaque requete a enchainer trois jointures pour decrire
+-- une seule entite.
+-- capacite_lits est un attribut numerique de la dimension, PAS une mesure :
+-- il ne s'additionne pas apres jointure sur un fait, il sert de denominateur
+-- (taux d'occupation).
 CREATE TABLE IF NOT EXISTS silver.dim_service
 (
     service_code   String,
     service_label  String,
+    categorie      String,
+    pole           String,
+    capacite_lits  UInt32,
     _ingested_at   DateTime
 )
 ENGINE = ReplacingMergeTree(_ingested_at)
@@ -135,14 +145,6 @@ CREATE TABLE IF NOT EXISTS silver.fact_monitoring
 ENGINE = MergeTree
 ORDER BY (stay_id, ts);
 
--- grain = 1 diagnostic. Table de faits sans mesure ("factless fact table") :
--- elle enregistre la survenue d'un fait (ce séjour porte ce diagnostic) sans
--- grandeur à agréger. Aplatie depuis bronze.diagnostics via ARRAY JOIN.
--- age_at_diagnostic : le grain (séjour x code) n'a pas de date propre, la date
--- de référence est donc l'admission du séjour qui porte le diagnostic. Sans
--- cette colonne, un patient diagnostiqué à 12 ans et revenu à 42 serait compté
--- deux fois dans la tranche de son âge courant : la prévalence par tranche
--- d'âge serait fausse pour tout patient au long cours.
 CREATE TABLE IF NOT EXISTS silver.fact_diagnostics
 (
     stay_id            String,
@@ -155,3 +157,25 @@ CREATE TABLE IF NOT EXISTS silver.fact_diagnostics
 )
 ENGINE = ReplacingMergeTree(_ingested_at)
 ORDER BY (stay_id, code_cim10);
+
+CREATE TABLE IF NOT EXISTS silver.dim_ccam
+(
+    code_ccam     String,
+    libelle       String,
+    tarif_euros   UInt32,
+    _ingested_at  DateTime
+)
+ENGINE = ReplacingMergeTree(_ingested_at)
+ORDER BY code_ccam;
+
+CREATE TABLE IF NOT EXISTS silver.fact_actes
+(
+    stay_id       String,
+    code_ccam     String,
+    acte_ts       DateTime,
+    patient_id    String,
+    service_code  String,
+    _ingested_at  DateTime
+)
+ENGINE = ReplacingMergeTree(_ingested_at)
+ORDER BY (stay_id, code_ccam, acte_ts);

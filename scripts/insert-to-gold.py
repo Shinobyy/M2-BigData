@@ -43,7 +43,9 @@ SQL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sql", "gold"
 # Gold) : l'ordre n'est ici que celui d'affichage dans les journaux.
 TABLE_ORDER = ["dms_par_service", "urgences_par_jour", "readmission_par_mois",
                "alertes_par_jour", "admissions_par_age",
-               "prevalence_pathologie", "cohorte_age_sexe"]
+               "prevalence_pathologie", "cohorte_age_sexe",
+               "activite_dms_par_categorie_service", "actes_par_service",
+               "actes_par_code_ccam", "densite_actes_par_lits", "montant_facture_par_service"]
 
 
 def read_sql(file_name):

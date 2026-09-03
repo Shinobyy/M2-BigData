@@ -76,3 +76,34 @@ CREATE TABLE IF NOT EXISTS bronze._ingestion_log
 )
 ENGINE = MergeTree
 ORDER BY ingested_at;
+
+CREATE TABLE IF NOT EXISTS bronze.description_service
+(
+    service_code   String,
+    categorie      String,
+    capacite_lits  UInt32,
+    pole           String,
+    _ingested_at   DateTime DEFAULT now()
+)
+ENGINE = MergeTree
+ORDER BY service_code;
+
+CREATE TABLE IF NOT EXISTS bronze.ccam
+(
+    code_ccam      String,
+    libelle        String,
+    tarif_euros    UInt32,
+    _ingested_at   DateTime DEFAULT now()
+)
+ENGINE = MergeTree
+ORDER BY code_ccam;
+
+CREATE TABLE IF NOT EXISTS bronze.actes
+(
+    stay_id        String,
+    code_ccam      String,
+    acte_ts         DateTime,
+    _ingested_at   DateTime DEFAULT now()
+)
+ENGINE = MergeTree
+ORDER BY (stay_id, acte_ts);

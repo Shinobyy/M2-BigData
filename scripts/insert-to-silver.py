@@ -36,16 +36,18 @@ SOURCES = {
     "dim_patient": "bronze.patients",
     "dim_service": "bronze.services",
     "dim_cim10": "bronze.cim10",
+    "dim_ccam": "bronze.ccam",
     "fact_sejours": "bronze.sejours",
     "fact_monitoring": "bronze.monitoring",
     "fact_diagnostics": "bronze.diagnostics",
+    "fact_actes": "bronze.actes",
 }
 
 # Ordre imposé par les dépendances : les dimensions avant les faits (contrôles
 # d'intégrité référentielle), et fact_sejours avant les deux autres faits qui
 # lui empruntent patient_id/service_code/age_at_admission.
-TABLE_ORDER = ["dim_patient", "dim_service", "dim_cim10",
-               "fact_sejours", "fact_monitoring", "fact_diagnostics"]
+TABLE_ORDER = ["dim_patient", "dim_service", "dim_cim10", "dim_ccam",
+               "fact_sejours", "fact_monitoring", "fact_diagnostics", "fact_actes"]
 
 
 def read_sql(file_name):

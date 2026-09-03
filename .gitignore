@@ -2,3 +2,5 @@ scripts/.env
 scripts/.venv
 lake/archive
 assets-dossier/
+source-evolution/
+source-filestorage/

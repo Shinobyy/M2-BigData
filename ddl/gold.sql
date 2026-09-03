@@ -143,6 +143,84 @@ CREATE TABLE IF NOT EXISTS gold.cohorte_age_sexe
 ENGINE = ReplacingMergeTree(_processed_at)
 ORDER BY (age_group, sex);
 
+
+
+-- NOUVELLES KPIS
+
+CREATE TABLE IF NOT EXISTS gold.activite_dms_par_categorie_service
+(
+    categorie             String,
+    mois                  Date,
+    nb_sejours_termines   UInt32,
+    nb_sejours_en_cours   UInt32,
+    dms_jours             Float64,
+    _processed_at         DateTime
+)
+ENGINE = ReplacingMergeTree(_processed_at)
+ORDER BY (categorie, mois);
+
+CREATE TABLE IF NOT EXISTS gold.actes_par_service
+(
+    service_code          String,
+    mois                  Date,
+    nb_actes              UInt32,
+    _processed_at         DateTime
+)
+ENGINE = ReplacingMergeTree(_processed_at)
+ORDER BY (service_code, mois);
+
+
+-- Actes realises par code CCAM et par mois.
+-- Il n'existe pas de "type d'acte" dans les sources : ni ccam.csv ni
+-- actes.parquet n'en portent. Le seul axe disponible est le code lui-meme,
+-- accompagne de son libelle -- meme montage que prevalence_pathologie
+-- (code_cim10 + pathologie). Le libelle est denormalise ici pour que le
+-- dashboard n'ait aucune jointure a faire.
+CREATE TABLE IF NOT EXISTS gold.actes_par_code_ccam
+(
+    code_ccam             String,
+    libelle               String,
+    mois                  Date,
+    nb_actes              UInt32,
+    nb_sejours_concernes  UInt32,
+    _processed_at         DateTime
+)
+ENGINE = ReplacingMergeTree(_processed_at)
+ORDER BY (code_ccam, mois);
+
+
+CREATE TABLE IF NOT EXISTS gold.densite_actes_par_lits
+(
+    service_code          String,
+    mois                  Date,
+    nb_actes              UInt32,
+    capacite_lits         UInt32,
+    densite_actes_par_lits Float64,
+    _processed_at         DateTime
+)
+ENGINE = ReplacingMergeTree(_processed_at)
+ORDER BY (service_code, mois);
+
+-- Recettes T2A : somme des tarifs des actes realises, par service et par mois.
+-- UInt64 et non Float64 : tarif_euros est un entier en euros (cf.
+-- bronze.ccam), une somme d'entiers reste un entier. Un flottant
+-- reintroduirait au niveau agrege ce qu'on evite au niveau unitaire.
+CREATE TABLE IF NOT EXISTS gold.montant_facture_par_service
+(
+    service_code          String,
+    mois                  Date,
+    nb_actes              UInt32,
+    montant_facture_euros UInt64,
+    _processed_at         DateTime
+)
+ENGINE = ReplacingMergeTree(_processed_at)
+ORDER BY (service_code, mois);
+
+
+
+
+
+
 -- ------------------------------------------------ Cloisonnement des droits
 -- Deux rôles, deux périmètres disjoints. Aucun des deux n'a accès à silver :
 -- les dashboards ne voient que des agrégats, jamais le grain patient.
@@ -159,6 +237,11 @@ GRANT SELECT ON gold.urgences_par_jour TO pilotage_user;
 GRANT SELECT ON gold.readmission_par_mois TO pilotage_user;
 GRANT SELECT ON gold.alertes_par_jour TO pilotage_user;
 GRANT SELECT ON gold.admissions_par_age TO pilotage_user;
+GRANT SELECT ON gold.activite_dms_par_categorie_service TO pilotage_user;
+GRANT SELECT ON gold.actes_par_service TO pilotage_user;
+GRANT SELECT ON gold.actes_par_code_ccam TO pilotage_user;
+GRANT SELECT ON gold.densite_actes_par_lits TO pilotage_user;
+GRANT SELECT ON gold.montant_facture_par_service TO pilotage_user;
 
 GRANT SELECT ON gold.prevalence_pathologie TO recherche_user;
 GRANT SELECT ON gold.cohorte_age_sexe TO recherche_user;

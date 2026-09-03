@@ -78,7 +78,7 @@ def clear_bronze_table(table_name):
     else:
         print(f"Failed to clear bronze.{table_name}: {response.status_code} {response.text}")
 
-BRONZE_TABLES = ["patients", "sejours", "diagnostics", "monitoring", "services", "cim10"]
+BRONZE_TABLES = ["patients", "sejours", "diagnostics", "monitoring", "services", "cim10", "description_service", "ccam", "actes"]
 
 def clear_bronze():
     for table in BRONZE_TABLES:

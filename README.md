@@ -158,9 +158,10 @@ GROUP BY service_code, jour;
 
 **Taux de réadmission à 30 jours (qualité des soins)**
 ```sql
-SELECT service_code, avg(readmission_30j) AS readmission_rate
+SELECT toStartOfMonth(admission_ts) AS mois,
+       avg(readmission_30j) AS readmission_rate
 FROM fact_sejours
-GROUP BY service_code;
+GROUP BY mois;
 ```
 
 **Surveillance des constantes : relevés en alerte / jour**
