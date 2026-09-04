@@ -5,7 +5,7 @@ title Gold — une table par indicateur, cloisonnée par usage
 legend right
   * = clé de tri (ORDER BY) = grain de l'indicateur
   Toutes les tables : ReplacingMergeTree(_processed_at)
-  Un recalcul écrase la ligne, il ne la duplique pas
+  Recalcul par TRUNCATE puis réécriture intégrale
 end legend
 
 package "Pilotage hospitalier\naccès : pilotage_user" #E8F4F8 {
@@ -26,11 +26,9 @@ package "Pilotage hospitalier\naccès : pilotage_user" #E8F4F8 {
     nb_passages : UInt32
   }
 
-  entity readmission_par_service {
-    * service_code : String
+  entity readmission_par_mois {
     * mois : Date
     --
-    service_label : String
     nb_sejours : UInt32
     nb_readmissions : UInt32
     taux_readmission_pct : Float64
@@ -38,9 +36,7 @@ package "Pilotage hospitalier\naccès : pilotage_user" #E8F4F8 {
 
   entity alertes_par_jour {
     * jour : Date
-    * service_code : String
     --
-    service_label : String
     nb_releves : UInt32
     nb_alertes_fc : UInt32
     nb_alertes_spo2 : UInt32
@@ -55,6 +51,64 @@ package "Pilotage hospitalier\naccès : pilotage_user" #E8F4F8 {
     nb_admissions : UInt32
     nb_patients : UInt32
   }
+
+  entity activite_dms_par_categorie_service {
+    * categorie : String
+    * mois : Date
+    --
+    nb_sejours_termines : UInt32
+    nb_sejours_en_cours : UInt32
+    dms_jours : Float64
+  }
+
+  entity actes_par_service {
+    * service_code : String
+    * mois : Date
+    --
+    nb_actes : UInt32
+  }
+
+  entity actes_par_code_ccam {
+    * code_ccam : String
+    * mois : Date
+    --
+    libelle : String
+    nb_actes : UInt32
+    nb_sejours_concernes : UInt32
+  }
+
+  entity densite_actes_par_lits {
+    * service_code : String
+    * mois : Date
+    --
+    nb_actes : UInt32
+    capacite_lits : UInt32
+    densite_actes_par_lits : Float64
+  }
+
+  entity montant_facture_par_service {
+    * service_code : String
+    * mois : Date
+    --
+    nb_actes : UInt32
+    montant_facture_euros : UInt64
+  }
+
+  note bottom of activite_dms_par_categorie_service
+    dms_par_service remonte d'un cran dans la
+    hierarchie du service. La DMS est RECALCULEE
+    depuis fact_sejours, jamais moyennee depuis
+    dms_par_service : une moyenne de moyennes
+    donnerait le meme poids a un service de 20
+    sejours et a un service de 2 000.
+  end note
+
+  note bottom of densite_actes_par_lits
+    capacite_lits vient de dim_service. Un service
+    absent de description_service.csv sort avec 0
+    lits : la division doit etre protegee par
+    nullIf(capacite_lits, 0).
+  end note
 
   note bottom of admissions_par_age
     Tranche calculee a la date d'admission,
@@ -91,7 +145,7 @@ package "Recherche clinique\naccès : recherche_user" #FFF4E0 {
     temps.
     ----
     Perimetre : les patients ayant au moins
-    un sejour (5 358), et non l'ensemble des
+    un sejour (5 949), et non l'ensemble des
     patients du referentiel (6 000).
   end note
 }
@@ -100,16 +154,25 @@ note as N_source
   <b>Alimentation</b>
   dms_par_service          <- silver.fact_sejours + dim_service
   urgences_par_jour        <- silver.fact_sejours
-  readmission_par_service  <- silver.fact_sejours + dim_service
-  alertes_par_jour         <- silver.fact_monitoring + dim_service
+  readmission_par_mois     <- silver.fact_sejours
+  alertes_par_jour         <- silver.fact_monitoring
   admissions_par_age       <- silver.fact_sejours (age_at_admission)
   prevalence_pathologie    <- silver.fact_diagnostics + dim_cim10
   cohorte_age_sexe         <- silver.fact_sejours (age a la 1re admission)
                               + dim_patient (sexe)
+  activite_dms_par_categorie_service
+                           <- silver.fact_sejours + dim_service
+  actes_par_service        <- silver.fact_actes
+  actes_par_code_ccam      <- silver.fact_actes + dim_ccam
+  densite_actes_par_lits   <- silver.fact_actes + dim_service
+  montant_facture_par_service
+                           <- silver.fact_actes + dim_ccam (tarif)
   ----
-  Recalcul complet à chaque cycle (un agrégat mensuel
-  change dès qu'un jour du mois arrive), mais seules
-  les lignes dont la valeur a changé sont réécrites.
+  Recalcul complet à chaque cycle : un agrégat mensuel
+  change dès qu'un jour du mois arrive. Chaque table est
+  vidée puis réécrite intégralement — ReplacingMergeTree
+  écrase par clé mais ne supprime pas, une clé disparue
+  de Silver resterait affichée avec ses anciens chiffres.
 end note
 
 note as N_rgpd
@@ -121,10 +184,14 @@ note as N_rgpd
   ----
   <b>Petits effectifs</b>
   HAVING taille_cohorte >= 5 appliqué à
-  l'ÉCRITURE : aucune cohorte de moins de
-  5 patients n'est matérialisée. La règle
-  n'est donc pas contournable, même avec
+  l'ÉCRITURE plutôt qu'à la lecture : la
+  règle n'est pas contournable, même avec
   un accès direct à la table.
+  ----
+  <b>Actif sur cohorte_age_sexe uniquement.</b>
+  Le seuil est actuellement DÉSACTIVÉ sur
+  prevalence_pathologie : Q90 (3 patients)
+  et E84 (4) y sont matérialisés.
 end note
 N_rgpd .. cohorte_age_sexe
 

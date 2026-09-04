@@ -1,0 +1,71 @@
+@startuml architecture
+
+title Architecture technique — état au 2026-09-02\nPipeline batch médaillon, orchestré par docker compose
+
+left to right direction
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam ArrowColor #333333
+skinparam ArrowFontSize 11
+skinparam NoteBackgroundColor #FFFDF0
+skinparam PackageBackgroundColor #FFFFFF
+
+package "1 · Dépôt CHU\nhors périmètre" #EFEFEF {
+  folder "source-filestorage/\n<i><type>/<AAAA-MM-JJ>/<fichier></i>\n\npatients · sejours · diagnostics\nmonitoring · actes · referentiels" as SRC
+}
+
+package "2 · Conteneur pipeline\npython 3.12 · main.py · boucle 60 s" #E8F4F8 {
+  component "sync-to-lake.py\n<i>pseudonymise</i>" as S1
+  folder "lake/\n+ archive/" as LAKE
+  component "insert-to-bronze.py" as S2
+  component "insert-to-silver.py" as S3
+  component "insert-to-gold.py" as S4
+  database "state/\nlast_ingested.log" as STATE
+}
+
+package "3 · Conteneur clickhouse\n:8123 HTTP · :9000 natif" #FFF9E0 {
+  database "BRONZE\n<i>brut, typé, append-only</i>\n9 tables + _ingestion_log" as BRONZE
+  database "SILVER\n<i>étoile, grain fin, nettoyé</i>\n4 dim · 4 faits\n_watermarks · _rejets" as SILVER
+  database "GOLD\n<i>1 table = 1 indicateur</i>\n12 KPI pré-agrégés" as GOLD
+}
+
+package "4 · Restitution" #FFF4E0 {
+  component "Metabase\n:3000" as MB
+  card "Dashboard Pilotage\n13 cartes\n\nDashboard Recherche\n3 cartes" as DASH
+  database "postgres :5432\n<i>métadonnées</i>" as PG
+  component "provision-metabase.py" as PROV
+}
+
+SRC    --> S1     : lecture seule (:ro)
+S1     --> LAKE   : copie\npseudonymisée
+LAKE   --> S2
+S2     --> BRONZE : INSERT FORMAT\nCSV / Parquet / JSONEachRow
+BRONZE --> S3
+S3     --> SILVER
+SILVER --> S4
+S4     --> GOLD
+GOLD   --> MB     : SELECT\npilotage_user\nrecherche_user
+MB     --> DASH
+S1     ..> STATE  : watermark
+MB     ..> PG
+PROV   ..> MB     : API REST
+
+legend bottom
+  |= étape |= ce qu'elle garantit |
+  | <b>sync-to-lake</b> | patient_id → SHA256(id + sel) sur 16 car. ; nir / nom / prenom ne quittent jamais le dépôt. |
+  |  | Watermark par type de dépôt, stocké hors du lake : celui-ci peut être purgé sans perdre la reprise. |
+  | <b>insert-to-bronze</b> | Fichier → table par son nom (actes.parquet → bronze.actes). |
+  |  | Succès → déplacé dans lake/archive/ ; échec → conservé et rejoué. Les deux tracés dans _ingestion_log. |
+  | <b>insert-to-silver</b> | Watermark par table sur max(_ingested_at) de la source Bronze. |
+  |  | Contrôles qualité à l'entrée ; toute ligne écartée est tracée dans _rejets avec la règle en cause. |
+  | <b>insert-to-gold</b> | Pas de watermark : un agrégat mensuel change dès qu'un jour du mois arrive. |
+  |  | TRUNCATE puis réécriture intégrale — ReplacingMergeTree écrase par clé mais ne supprime pas. |
+  | <b>Cloisonnement</b> | pilotage_user → 10 tables gold ; recherche_user → 2. Aucun droit sur silver ni bronze. |
+  |  | SETTINGS final = 1 : FINAL d'office à la lecture, pour ne jamais exposer de doublon transitoire. |
+  | <b>Exploitation</b> | Cycle séquentiel : le suivant ne démarre qu'à la fin du précédent (pas de chevauchement). |
+  |  | Arrêt à la première étape en échec — jamais de Gold calculé sur un Silver partiel. |
+  |  | <b>Limite connue</b> : SQL et scripts figés dans l'image au build, toute modification exige un rebuild. |
+endlegend
+
+@enduml

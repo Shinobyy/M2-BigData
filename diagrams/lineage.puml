@@ -1,0 +1,111 @@
+@startuml lineage
+
+title Lignage complet Bronze → Silver → Gold — état au 2026-09-02\nFlèches extraites des FROM/JOIN réels des 20 requêtes du pipeline
+
+left to right direction
+
+skinparam shadowing false
+skinparam ArrowColor #666666
+skinparam ArrowFontSize 10
+skinparam NoteBackgroundColor #FFFDF0
+skinparam rectangle {
+  BorderColor #888888
+  FontSize 12
+}
+
+' ============================================================ BRONZE
+package "BRONZE — miroir des fichiers déposés\nMergeTree, append-only, aucune transformation" #F5E6D3 {
+  rectangle "patients" as b_pat
+  rectangle "sejours" as b_sej
+  rectangle "diagnostics" as b_diag
+  rectangle "monitoring" as b_mon
+  rectangle "actes" as b_act
+  rectangle "services" as b_srv
+  rectangle "description_service" as b_desc
+  rectangle "cim10" as b_cim
+  rectangle "ccam" as b_ccam
+  rectangle "_ingestion_log\n<i>traçabilité fichier</i>" as b_log #EEEEEE
+}
+
+' ============================================================ SILVER
+package "SILVER — étoile au grain fin, nettoyée et contrôlée" #D6E9F2 {
+  rectangle "<b>dim_patient</b>" as s_dpat
+  rectangle "<b>dim_service</b>\n<i>+ categorie, pole, lits</i>" as s_dsrv
+  rectangle "<b>dim_cim10</b>" as s_dcim
+  rectangle "<b>dim_ccam</b>\n<i>+ tarif_euros</i>" as s_dccam
+  rectangle "fact_sejours\n<i>duree, readmission_30j, age</i>" as s_fsej
+  rectangle "fact_monitoring\n<i>is_alerte_fc/spo2/temp</i>" as s_fmon
+  rectangle "fact_diagnostics\n<i>age_at_diagnostic</i>" as s_fdiag
+  rectangle "fact_actes" as s_fact
+  rectangle "_watermarks\n_rejets" as s_tech #EEEEEE
+}
+
+' ============================================================ GOLD
+package "GOLD — pilotage hospitalier\naccès : pilotage_user" #FDEBD0 {
+  rectangle "dms_par_service" as g_dms
+  rectangle "activite_dms_par_categorie_service" as g_cat
+  rectangle "urgences_par_jour" as g_urg
+  rectangle "readmission_par_mois" as g_rea
+  rectangle "alertes_par_jour" as g_ale
+  rectangle "admissions_par_age" as g_age
+  rectangle "actes_par_service" as g_asrv
+  rectangle "actes_par_code_ccam" as g_accam
+  rectangle "densite_actes_par_lits" as g_dens
+  rectangle "montant_facture_par_service" as g_mont
+}
+
+package "GOLD — recherche clinique\naccès : recherche_user" #FADBD8 {
+  rectangle "prevalence_pathologie" as g_pre
+  rectangle "cohorte_age_sexe" as g_coh
+}
+
+' ============================================================ BRONZE -> SILVER
+b_pat  --> s_dpat
+b_srv  --> s_dsrv
+b_desc --> s_dsrv  : LEFT JOIN
+b_cim  --> s_dcim
+b_ccam --> s_dccam
+
+b_sej  --> s_fsej
+b_mon  --> s_fmon
+b_sej  --> s_fmon
+b_diag --> s_fdiag
+b_sej  --> s_fdiag
+b_act  --> s_fact
+b_sej  --> s_fact
+b_ccam --> s_fact  : <i>contrôle CCAM</i>
+
+' ============================================================ SILVER -> GOLD
+s_fsej  --> g_dms
+s_dsrv  --> g_dms
+s_fsej  --> g_cat
+s_dsrv  --> g_cat
+s_fsej  --> g_urg
+s_fsej  --> g_rea
+s_fsej  --> g_age
+s_fmon  --> g_ale
+s_fact  --> g_asrv
+s_fact  --> g_accam
+s_dccam --> g_accam
+s_fact  --> g_dens
+s_dsrv  --> g_dens
+s_fact  --> g_mont
+s_dccam --> g_mont
+s_fdiag --> g_pre
+s_dcim  --> g_pre
+s_fsej  --> g_coh
+s_dpat  --> g_coh
+
+legend bottom
+  |= lecture |= détail |
+  | <b>Ce que le schéma montre</b> | Les flèches sont extraites des FROM/JOIN réels des 20 fichiers .sql, pas d'une intention. |
+  | <b>Ce qu'il ne montre pas</b> | Les liens dimension→fait internes à Silver (contrôles d'intégrité) : voir silver.puml. |
+  |  | Les anti-jointures d'une table sur elle-même, qui évitent de réécrire une ligne inchangée. |
+  | <b>bronze.sejours</b> | Lu par les 4 faits : il porte patient_id et service_code, dénormalisés sur chaque fait |
+  |  | pour qu'aucun fait n'ait jamais besoin d'en interroger un autre. |
+  | <b>Asymétrie assumée</b> | fact_actes contrôle son code contre <b>bronze.ccam</b> ; fact_diagnostics contre <b>silver.dim_cim10</b>. |
+  |  | Les deux marchent, mais les deux faits ne suivent pas la même règle — à harmoniser. |
+  | <b>Grain</b> | Bronze = 1 ligne par ligne de fichier · Silver = 1 ligne par événement · Gold = 1 ligne par valeur affichable. |
+endlegend
+
+@enduml

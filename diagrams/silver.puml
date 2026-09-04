@@ -22,7 +22,10 @@ package "Dimensions" {
   entity dim_service <<RMT(_ingested_at)>> {
     * service_code : String
     --
-    service_label : String
+    service_label : String  <i>niveau 1</i>
+    categorie : String      <i>niveau 2</i>
+    pole : String           <i>niveau 3</i>
+    capacite_lits : UInt32
     .. technique ..
     _ingested_at : DateTime
   }
@@ -31,6 +34,15 @@ package "Dimensions" {
     * code_cim10 : String
     --
     libelle : String
+    .. technique ..
+    _ingested_at : DateTime
+  }
+
+  entity dim_ccam <<RMT(_ingested_at)>> {
+    * code_ccam : String
+    --
+    libelle : String
+    tarif_euros : UInt32
     .. technique ..
     _ingested_at : DateTime
   }
@@ -81,6 +93,17 @@ package "Faits" {
     .. technique ..
     _ingested_at : DateTime
   }
+
+  entity fact_actes <<RMT(_ingested_at)>> {
+    * stay_id : String
+    * code_ccam : String
+    * acte_ts : DateTime
+    --
+    patient_id : String
+    service_code : String
+    .. technique ..
+    _ingested_at : DateTime
+  }
 }
 
 note top of dim_patient
@@ -126,6 +149,9 @@ dim_service ||--o{ fact_monitoring : service_code
 dim_patient ||--o{ fact_diagnostics : patient_id
 dim_service ||--o{ fact_diagnostics : service_code
 dim_cim10 ||--o{ fact_diagnostics : code_cim10
+dim_patient ||--o{ fact_actes : patient_id
+dim_service ||--o{ fact_actes : service_code
+dim_ccam ||--o{ fact_actes : code_ccam
 
 note as N_controles
   <b>Contrôles qualité appliqués ici</b>
@@ -134,6 +160,7 @@ note as N_controles
     existants ; sortie NULL = séjour en cours, conservé
   monitoring : FC 20-250, SpO2 50-100, temp 30-45
   diagnostics : code CIM-10 présent au référentiel
+  actes : code CCAM présent au référentiel
   ----
   Toute ligne écartée est tracée dans _rejets
   avec la règle et les valeurs en cause.
@@ -156,11 +183,28 @@ note bottom of fact_sejours
 end note
 
 note bottom of fact_monitoring
-  Seul fait en MergeTree simple : flux purement
-  additif (une clé stay_id+ts n'est jamais
-  redéposée), donc aucune déduplication à faire.
-  C'est aussi le plus gros volume : ingestion
-  incrémentale par watermark, sans anti-jointure.
+  <b>Seul fait en MergeTree simple — limite assumée</b>
+  Le flux source est purement additif : une clé
+  stay_id+ts n'est jamais redéposée par le CHU.
+  Mais le PIPELINE, lui, peut relire tout Bronze
+  après un rejeu ou un reset de watermark, et
+  rien ne déduplique alors les lignes réinsérées.
+  ----
+  C'est la seule table du projet où rejouer une
+  ingestion fausse les chiffres. Les deux autres
+  faits sont en ReplacingMergeTree sur leur grain
+  et absorbent le cas sans intervention.
+  ----
+  Correctif connu : RMT(_ingested_at) sur
+  (stay_id, ts) — la clé de tri EST déjà le grain.
+end note
+
+note bottom of fact_actes
+  ReplacingMergeTree bien que le flux soit additif,
+  contrairement à fact_monitoring : la clé de tri
+  est exactement le grain, donc un rejeu ne peut
+  pas dupliquer. Coût nul, une classe de panne
+  en moins.
 end note
 
 note bottom of fact_diagnostics

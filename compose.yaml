@@ -31,7 +31,11 @@ services:
       SOURCE_PATH: /data/source
       LAKE_PATH: /data/lake
       STATE_PATH: /data/state
-      LOOP_INTERVAL: 60
+      # Aligné sur la cadence réelle des dépôts du CHU : un cycle par jour.
+      # Chaque cycle reconstruit intégralement les 12 tables Gold ; les
+      # multiplier n'apporterait rien puisque la source, elle, ne bouge
+      # qu'une fois par jour.
+      LOOP_INTERVAL: 86400
     volumes:
       # Dépôt du CHU monté en lecture seule : la contrainte du sujet est
       # garantie par l'infrastructure, pas seulement par le code.
@@ -40,7 +44,12 @@ services:
       # État d'orchestration (watermarks), monté en dossier et non en fichier :
       # un montage de fichier seul casserait si le log était réécrit par renommage.
       - ./state:/data/state
-    restart: unless-stopped
+    # on-failure et non unless-stopped : main.py sort en code 1 après
+    # MAX_CONSECUTIVE_FAILURES cycles ratés d'affilée. unless-stopped
+    # relancerait indéfiniment sans distinguer l'arrêt propre de la panne ;
+    # on-failure laisse le conteneur en « Exited (1) », visible dans
+    # `docker compose ps` et exploitable par une supervision.
+    restart: on-failure:3
 
   metabase:
     image: metabase/metabase

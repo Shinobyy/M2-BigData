@@ -66,6 +66,34 @@ entity cim10 {
   _ingested_at : DateTime
 }
 
+entity description_service {
+  * service_code : String
+  --
+  categorie : String
+  pole : String
+  capacite_lits : UInt32
+  .. technique ..
+  _ingested_at : DateTime
+}
+
+entity ccam {
+  * code_ccam : String
+  --
+  libelle : String
+  tarif_euros : UInt32
+  .. technique ..
+  _ingested_at : DateTime
+}
+
+entity actes {
+  * stay_id : String
+  * acte_ts : DateTime
+  --
+  code_ccam : String
+  .. technique ..
+  _ingested_at : DateTime
+}
+
 entity _ingestion_log {
   * ingested_at : DateTime
   --
@@ -80,6 +108,9 @@ sejours ..> patients : patient_id (non FK)
 sejours ..> services : service_code (non FK)
 diagnostics ..> sejours : stay_id (non FK)
 monitoring ..> sejours : stay_id (non FK)
+actes ..> sejours : stay_id (non FK)
+actes ..> ccam : code_ccam (non FK)
+description_service ..> services : service_code (non FK)
 
 note right of patients
   patient_id est déjà un pseudonyme
@@ -93,6 +124,14 @@ note right of diagnostics
   quelle : un tableau de diagnostics
   par séjour. L'aplatissement est
   fait en Silver.
+end note
+
+note right of description_service
+  Deuxième fichier décrivant le même
+  service que services.csv : deux
+  fichiers sources, donc deux tables
+  Bronze. Ils sont conformés en une
+  seule dimension en Silver.
 end note
 
 note bottom of _ingestion_log
